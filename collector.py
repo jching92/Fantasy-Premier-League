@@ -97,6 +97,11 @@ def merge_gw(gw, gw_directory):
     else:
         final_fieldnames = new_fieldnames
     
+    # Remove any existing rows for this GW before combining — makes merge_gw()
+    # idempotent so running update_gw.py multiple times for the same GW
+    # does not produce duplicate rows in merged_gw.csv or gw{N}.csv.
+    existing_rows = [r for r in existing_rows if int(r.get('GW', 0)) != gw]
+
     # Combine all rows
     all_rows = existing_rows + new_rows
     
