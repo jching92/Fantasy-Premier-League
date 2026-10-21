@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import sys
 import pandas as pd
 
@@ -44,12 +45,8 @@ def check_merged_gw_fixtures(folder_path):
   merged_file_path = os.path.join(folder_path, "merged_gw.csv")
 
   if not os.path.exists(merged_file_path):
-    parent_path = os.path.join(os.path.dirname(folder_path), "merged_gw.csv")
-    if os.path.exists(parent_path):
-      merged_file_path = parent_path
-    else:
-      print("ℹ️ merged_gw.csv not found. Skipping merged fixture check.")
-      return 0
+    print("❌ merged_gw.csv not found. Skipping merged fixture check.")
+    return 1
 
   print(f"Analyzing {merged_file_path}...")
   try:
@@ -99,7 +96,6 @@ def check_single_gw_fixtures(folder_path):
           print(f"⚠️ {filename}: Missing columns {missing_cols}. Skipped.")
           continue
 
-        # Group-by team and opponent_team to get unique matchups per team in this GW
         team_opp_df = df[["team", "opponent_team"]].drop_duplicates()
 
         # Rule A: Exactly 20 team-opponent entry rows per gameweek file
@@ -136,10 +132,87 @@ def check_single_gw_fixtures(folder_path):
   return total_issues
 
 
+def check_gw_xp_pairing(folder_path):
+  print("\n--- Phase 4: Checking pairing of gw{i}.csv and xP{i}.csv files ---")
+  gw_indices = set()
+  xp_indices = set()
+
+  for filename in os.listdir(folder_path):
+    m_gw = re.match(r"^gw(\d+)\.csv$", filename)
+    if m_gw:
+      gw_indices.add(int(m_gw.group(1)))
+    m_xp = re.match(r"^xP(\d+)\.csv$", filename)
+    if m_xp:
+      xp_indices.add(int(m_xp.group(1)))
+
+  all_indices = sorted(list(gw_indices.union(xp_indices)))
+  issues = 0
+
+  for i in all_indices:
+    has_gw = i in gw_indices
+    has_xp = i in xp_indices
+
+    if not has_gw:
+      print(f"❌ [Missing GW] xP{i}.csv exists, but gw{i}.csv is missing.")
+      issues += 1
+    elif not has_xp:
+      print(f"❌ [Missing xP] gw{i}.csv exists, but xP{i}.csv is missing.")
+      issues += 1
+    else:
+      print(f"✔ [Pair Matched] gw{i}.csv & xP{i}.csv")
+
+  return issues
+
+
+def check_merged_row_count_sum(folder_path):
+  print(
+      "\n--- Phase 5: Checking merged_gw.csv row count vs sum of gw{i}.csv rows"
+      " ---"
+  )
+  merged_file_path = os.path.join(folder_path, "merged_gw.csv")
+
+  if not os.path.exists(merged_file_path):
+    print("❌ merged_gw.csv not found. Skipping sum comparison.")
+    return 1
+
+  try:
+    merged_df = pd.read_csv(merged_file_path, low_memory=False)
+    merged_rows = len(merged_df)
+
+    sum_gw_rows = 0
+    gw_file_count = 0
+    for filename in os.listdir(folder_path):
+      if filename.startswith("gw") and filename.endswith(".csv"):
+        file_path = os.path.join(folder_path, filename)
+        df = pd.read_csv(file_path, low_memory=False)
+        sum_gw_rows += len(df)
+        gw_file_count += 1
+
+    print(f"Total rows in merged_gw.csv: {merged_rows}")
+    print(f"Sum of rows across {gw_file_count} gw{{i}}.csv files: {sum_gw_rows}")
+
+    if merged_rows != sum_gw_rows:
+      print(
+          f"❌ Row count mismatch! merged_gw.csv has {merged_rows} rows,"
+          f" but the sum of gw{{i}}.csv files is {sum_gw_rows}."
+      )
+      return 1
+    else:
+      print(
+          "✔ Row count match passed: merged_gw.csv matches the sum of all"
+          " gw{i}.csv files."
+      )
+      return 0
+  except Exception as e:
+    print(f"❌ Error during row sum comparison: {e}")
+    return 1
+
+
 def main():
   parser = argparse.ArgumentParser(
       description=(
-          "FPL Data Quality Checker: Full-row duplicates and fixture logic."
+          "FPL Data Quality Checker: Duplicates, Fixtures, Pairings, and"
+          " Totals."
       )
   )
   parser.add_argument(
@@ -164,8 +237,16 @@ def main():
   row_dupes = check_full_row_duplicates(args.folder, args.output)
   merged_conflicts = check_merged_gw_fixtures(args.folder)
   gw_issues = check_single_gw_fixtures(args.folder)
+  pairing_issues = check_gw_xp_pairing(args.folder)
+  sum_issues = check_merged_row_count_sum(args.folder)
 
-  total_issues = row_dupes + merged_conflicts + gw_issues
+  total_issues = (
+      row_dupes
+      + merged_conflicts
+      + gw_issues
+      + pairing_issues
+      + sum_issues
+  )
 
   print("\n=======================================")
   if total_issues > 0:
