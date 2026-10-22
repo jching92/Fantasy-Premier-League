@@ -33,7 +33,7 @@ pipeline {
                      description: 'Untick for a dry run: generate + check, but do not push or trigger downstream')
         string(name: 'GIT_CREDENTIALS_ID', defaultValue: '',
                description: 'Jenkins credentials (username + GitHub token) for the push. Blank = the job\'s SCM credentials')
-        string(name: 'DQ_JOB', defaultValue: 'fpl_dq_checks_remote',
+        string(name: 'DQ_JOB', defaultValue: 'fpl_dq_checks_github/master',
                description: 'Downstream DQ job to trigger after a push, e.g. fpl_dq_checks_github/master for a Multibranch job. Blank = none')
     }
     environment {
