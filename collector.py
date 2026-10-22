@@ -115,38 +115,93 @@ def merge_gw(gw, gw_directory):
             filled_row = {field: row.get(field, '') for field in final_fieldnames}
             writer.writerow(filled_row)
 
+def _canonical_dir_names(root_directory_name):
+    """Map player id -> canonical directory name ('<first>_<second>_<id>'),
+    the naming global_scraper.py uses via player_idlist.csv."""
+    canonical = {}
+    path = os.path.join(root_directory_name, "player_idlist.csv")
+    if os.path.exists(path):
+        with open(path, 'r', encoding="utf-8") as fin:
+            for row in csv.DictReader(fin):
+                pid = int(row['id'])
+                canonical[pid] = f"{row['first_name']}_{row['second_name']}_{pid}"
+    return canonical
+
+
 def collect_gw(gw, directory_name, output_dir, root_directory_name="data/2026-27"):
-    rows = []
+    """Build gw{gw}.csv from the per-player gw.csv files.
+
+    Robust to:
+      * players missing from players_raw.csv (e.g. a mid-season debut outside
+        the transfer window): the name is taken from the directory and the
+        position is 'UNK', with a warning, instead of raising KeyError.
+      * several directories for the same player id (e.g. 'A.Becker_350' and
+        'Alisson_Becker_350'): only one row per (player, fixture) is kept,
+        preferring the canonical player_idlist.csv directory.
+    """
     fieldnames = []
     fixtures_home, fixtures_away = get_fixtures(root_directory_name)
     teams = get_teams(root_directory_name)
     names, positions = get_positions(root_directory_name)
+    canonical = _canonical_dir_names(root_directory_name)
     xPoints = get_expected_points(gw, output_dir)
-    for root, dirs, files in os.walk(u"./" + directory_name):
-        for fname in files:
-            if fname == 'gw.csv':
-                fpath = os.path.join(root, fname)
-                fin = open(fpath, 'r')
-                reader = csv.DictReader(fin)
-                fieldnames = reader.fieldnames
-                for row in reader:
-                    if int(row['round']) == gw:
-                        id = int(os.path.basename(root).split('_')[-1])
-                        name = names[id]
-                        position = positions[id]
-                        fixture = int(row['fixture'])
-                        if row['was_home'] == True or row['was_home'] == "True":
-                            row['team'] = teams[fixtures_home[fixture]]
-                        else:
-                            row['team'] = teams[fixtures_away[fixture]]
-                        row['name'] = name
-                        row['position'] = position
-                        if id in xPoints:
-                            row['xP'] = xPoints[id]
-                        else:
-                            row['xP'] = 0.0
-                        rows += [row]
 
+    picked = {}            # (player_id, fixture) -> (is_canonical, row)
+    unknown_ids = {}       # player_id -> directory name
+    dropped_duplicates = 0
+
+    for root, dirs, files in sorted(os.walk(u"./" + directory_name)):
+        if 'gw.csv' not in files:
+            continue
+        dir_name = os.path.basename(root.rstrip('/'))
+        try:
+            pid = int(dir_name.split('_')[-1])
+        except ValueError:
+            print(f"  WARNING: skipping directory with no player id: {dir_name}")
+            continue
+        is_canonical = canonical.get(pid) == dir_name
+
+        with open(os.path.join(root, 'gw.csv'), 'r', encoding="utf-8") as fin:
+            reader = csv.DictReader(fin)
+            for col in reader.fieldnames or []:
+                if col not in fieldnames:
+                    fieldnames.append(col)
+            for row in reader:
+                if int(row['round']) != gw:
+                    continue
+                if pid in names:
+                    name, position = names[pid], positions[pid]
+                else:
+                    unknown_ids[pid] = dir_name
+                    name = dir_name.rsplit('_', 1)[0].replace('_', ' ')
+                    position = 'UNK'
+                fixture = int(row['fixture'])
+                if row['was_home'] == True or row['was_home'] == "True":
+                    row['team'] = teams[fixtures_home[fixture]]
+                else:
+                    row['team'] = teams[fixtures_away[fixture]]
+                row['name'] = name
+                row['position'] = position
+                row['xP'] = xPoints.get(pid, 0.0)
+
+                key = (pid, fixture)
+                if key in picked:
+                    dropped_duplicates += 1
+                    if is_canonical and not picked[key][0]:
+                        picked[key] = (is_canonical, row)
+                else:
+                    picked[key] = (is_canonical, row)
+
+    for pid, dir_name in sorted(unknown_ids.items()):
+        print(f"  WARNING: player id {pid} ({dir_name}) not in players_raw.csv; "
+              f"position set to UNK. Refresh players_raw.csv/player_idlist.csv.")
+    if dropped_duplicates:
+        print(f"  WARNING: dropped {dropped_duplicates} duplicate rows from "
+              f"multiple directories for the same player id")
+
+    rows = [row for _, row in sorted(picked.values(),
+                                     key=lambda v: (int(v[1]['element']) if v[1].get('element') else 0,
+                                                    int(v[1]['fixture'])))]
     fieldnames = ['name', 'position', 'team', 'xP'] + fieldnames
     outf = open(os.path.join(output_dir, "gw" + str(gw) + ".csv"), 'w', encoding="utf-8")
     writer = csv.DictWriter(outf, fieldnames=fieldnames, lineterminator='\n')

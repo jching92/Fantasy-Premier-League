@@ -3,7 +3,8 @@ import os
 import sys
 
 from getters import get_data, get_individual_player_data
-from parsers import parse_player_gw_history
+from parsers import parse_player_gw_history, parse_players
+from cleaners import id_players
 from collector import collect_gw, merge_gw
 
 
@@ -62,6 +63,29 @@ def generate_xp(data, gw):
     print(f"      Wrote {len(data['elements'])} players")
 
 
+def refresh_player_metadata(data):
+    """
+    Rewrite players_raw.csv and player_idlist.csv from bootstrap-static,
+    so players who debut mid-season (outside a transfer window) get a
+    name, position and canonical directory before collect_gw() runs.
+    """
+
+    old_ids = set()
+    idlist = os.path.join(BASE_DIR, "player_idlist.csv")
+    if os.path.exists(idlist):
+        with open(idlist, encoding="utf-8") as fin:
+            old_ids = {int(r["id"]) for r in csv.DictReader(fin)}
+
+    parse_players(data["elements"], BASE_DIR + "/")
+    id_players(os.path.join(BASE_DIR, "players_raw.csv"), BASE_DIR + "/")
+
+    new = [p for p in data["elements"] if p["id"] not in old_ids]
+    print(f"      players_raw.csv / player_idlist.csv: "
+          f"{len(data['elements'])} players")
+    for p in new:
+        print(f"      NEW: {p['first_name']} {p['second_name']} ({p['id']})")
+
+
 def refresh_player_gw_data(data):
     """
     Refresh player-level gw.csv files from the FPL
@@ -82,9 +106,11 @@ def refresh_player_gw_data(data):
 
         player_id = player["id"]
 
-        # Existing directory naming is handled by the
-        # repository's parser.
-        name = player["web_name"]
+        # Same '<first>_<second>' naming as global_scraper.py /
+        # player_idlist.csv. Using web_name here created a second
+        # directory per player (e.g. A.Becker_350 next to
+        # Alisson_Becker_350).
+        name = f"{player['first_name']}_{player['second_name']}"
 
         print(
             f"      [{count}/{total}] "
@@ -161,6 +187,11 @@ def main():
             f"WARNING: GW{gw} is not present "
             f"in bootstrap-static."
         )
+
+    # 0. players_raw.csv + player_idlist.csv
+    refresh_player_metadata(
+        data
+    )
 
     # 1. xP{gw}.csv
     generate_xp(
