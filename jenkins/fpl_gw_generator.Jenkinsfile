@@ -101,7 +101,7 @@ pipeline {
 
                     echo "Installing dependencies..."
                     "$VENV_PATH/bin/python" -m pip install --upgrade pip
-                    "$VENV_PATH/bin/python" -m pip install -r requirements-ci.txt
+                    "$VENV_PATH/bin/python" -m pip install -r requirements.txt
                 '''
             }
         }

@@ -1,4 +1,0 @@
-# Dependencies for the Jenkins jobs (update_gw.py + dq_checks.py) on Python 3.13.
-# requirements.txt pins pandas 0.25 / numpy 1.17, which don't build on 3.13.
-pandas>=2.2
-requests>=2.31
