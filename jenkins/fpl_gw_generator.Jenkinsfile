@@ -3,8 +3,10 @@
 // the data to the remote branch only if every check passes, then triggers
 // fpl_dq_checks_remote against what was pushed.
 //
-// Job setup: Pipeline script from SCM -> Git -> this repo (with credentials
-//            that can push), Script Path: jenkins/fpl_gw_generator.Jenkinsfile
+// Job setup: a plain Pipeline job (not Multibranch: its own push to the branch
+//            would trigger it again with no GW). Pipeline script from SCM ->
+//            Git -> this repo, with credentials that can push.
+//            Script Path: jenkins/fpl_gw_generator.Jenkinsfile
 //
 // Note: the FPL API only serves the current season. update_gw.py refuses to
 // run if SEASON doesn't match what the API is serving.
@@ -12,6 +14,8 @@
 pipeline {
     agent any
     options {
+        // The default checkout is a full, non-sparse clone; ours is shallow + sparse
+        skipDefaultCheckout()
         timeout(time: 120, unit: 'MINUTES')   // ~700 player API calls on the Pi
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '50'))
@@ -29,22 +33,31 @@ pipeline {
                      description: 'Untick for a dry run: generate + check, but do not push or trigger downstream')
         string(name: 'GIT_CREDENTIALS_ID', defaultValue: '',
                description: 'Jenkins credentials (username + GitHub token) for the push. Blank = the job\'s SCM credentials')
+        string(name: 'DQ_JOB', defaultValue: 'fpl_dq_checks_remote',
+               description: 'Downstream DQ job to trigger after a push, e.g. fpl_dq_checks_github/master for a Multibranch job. Blank = none')
     }
     environment {
-        VENV_PATH   = "/home/${env.USER}/venv/313venv"
+        // Outside the workspace so the clean checkout doesn't delete it each build
+        VENV_PATH   = "${env.HOME}/venv/313venv"
         RESULTS_DIR = 'fpl_dq_junit_results'
+        // Copied from params explicitly: on a job's first build Jenkins doesn't
+        // export parameters to sh steps yet, so $GEN_SEASON/$GEN_GW would be empty.
+        GEN_SEASON           = "${params.SEASON?.trim() ?: '2026-27'}"
+        GEN_GW               = "${params.GW?.trim() ?: ''}"
+        GEN_BRANCH           = "${params.BRANCH?.trim() ?: 'master'}"
+        GEN_REQUIRE_FINISHED = "${params.REQUIRE_FINISHED == null ? true : params.REQUIRE_FINISHED}"
     }
     stages {
         stage('Validate Parameters') {
             steps {
                 script {
-                    if (!(params.GW ==~ /\d+/) || params.GW.toInteger() < 1) {
-                        error("GW must be a positive integer, got '${params.GW}'")
+                    if (!(env.GEN_GW ==~ /\d+/) || env.GEN_GW.toInteger() < 1) {
+                        error("GW must be a positive integer, got '${env.GEN_GW}'. Use Build with Parameters.")
                     }
-                    if (!(params.SEASON ==~ /\d{4}-\d{2}/)) {
-                        error("SEASON must look like 2026-27, got '${params.SEASON}'")
+                    if (!(env.GEN_SEASON ==~ /\d{4}-\d{2}/)) {
+                        error("SEASON must look like 2026-27, got '${env.GEN_SEASON}'")
                     }
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${params.SEASON} GW${params.GW}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.GEN_SEASON} GW${env.GEN_GW}"
                 }
             }
         }
@@ -53,7 +66,7 @@ pipeline {
                 script {
                     checkout([
                         $class: 'GitSCM',
-                        branches: [[name: "*/${params.BRANCH}"]],
+                        branches: [[name: "*/${env.GEN_BRANCH}"]],
                         userRemoteConfigs: scm.userRemoteConfigs,
                         extensions: [
                             // Drop untracked output from earlier failed runs
@@ -62,11 +75,11 @@ pipeline {
                             // Only the scripts and this season's data
                             [$class: 'SparseCheckoutPaths', sparseCheckoutPaths: [
                                 [$class: 'SparseCheckoutPath', path: '/*.py'],
-                                [$class: 'SparseCheckoutPath', path: '/requirements*.txt'],
-                                [$class: 'SparseCheckoutPath', path: "/data/${params.SEASON}/"],
+                                [$class: 'SparseCheckoutPath', path: '/requirements.txt'],
+                                [$class: 'SparseCheckoutPath', path: "/data/${env.GEN_SEASON}/"],
                             ]],
                             // Check out onto a real branch (not detached HEAD) so we can commit
-                            [$class: 'LocalBranch', localBranch: params.BRANCH],
+                            [$class: 'LocalBranch', localBranch: env.GEN_BRANCH],
                         ],
                     ])
                 }
@@ -111,8 +124,8 @@ pipeline {
                     #!/bin/bash
                     VENV_PATH=$(cat "${WORKSPACE}/resolved_venv_path.txt") || exit 1
                     FINISHED_ARG=""
-                    if [ "$REQUIRE_FINISHED" = "true" ]; then FINISHED_ARG="--require-finished"; fi
-                    "$VENV_PATH/bin/python" update_gw.py "$GW" --season "$SEASON" $FINISHED_ARG
+                    if [ "$GEN_REQUIRE_FINISHED" = "true" ]; then FINISHED_ARG="--require-finished"; fi
+                    "$VENV_PATH/bin/python" update_gw.py "$GEN_GW" --season "$GEN_SEASON" $FINISHED_ARG
                 '''
             }
         }
@@ -123,11 +136,11 @@ pipeline {
                     #!/bin/bash
                     VENV_PATH=$(cat "${WORKSPACE}/resolved_venv_path.txt") || exit 1
                     rm -rf "$RESULTS_DIR"
-                    mkdir -p "$RESULTS_DIR/$SEASON"
-                    "$VENV_PATH/bin/python" dq_checks.py "data/$SEASON/gws" \
-                        --season "$SEASON" --gw "$GW" \
-                        --junit-dir "$RESULTS_DIR/$SEASON" \
-                        -o "$RESULTS_DIR/$SEASON/duplicates.csv"
+                    mkdir -p "$RESULTS_DIR/$GEN_SEASON"
+                    "$VENV_PATH/bin/python" dq_checks.py "data/$GEN_SEASON/gws" \
+                        --season "$GEN_SEASON" --gw "$GEN_GW" \
+                        --junit-dir "$RESULTS_DIR/$GEN_SEASON" \
+                        -o "$RESULTS_DIR/$GEN_SEASON/duplicates.csv"
                 '''
             }
         }
@@ -142,40 +155,41 @@ pipeline {
                     withCredentials([gitUsernamePassword(credentialsId: credsId, gitToolName: 'Default')]) {
                         sh '''
                             #!/bin/bash
-                            git add -A "data/$SEASON"
+                            git add -A "data/$GEN_SEASON"
                             if git diff --cached --quiet; then
-                                echo "No data changes for $SEASON GW$GW; nothing to push."
+                                echo "No data changes for $GEN_SEASON GW$GEN_GW; nothing to push."
                                 echo "nothing" > "${WORKSPACE}/push_result.txt"
                                 exit 0
                             fi
                             git diff --cached --stat | tail -5
                             git -c user.name="Jenkins (fpl_gw_generator)" \
                                 -c user.email="jenkins@jching-rpi4" \
-                                commit -q -m "GW$GW $SEASON (fpl_gw_generator #$BUILD_NUMBER)"
+                                commit -q -m "GW$GEN_GW $GEN_SEASON (fpl_gw_generator #$BUILD_NUMBER)"
                             # Rejected if the branch moved since checkout; re-run the job in that case
-                            git push origin "HEAD:refs/heads/$BRANCH" || {
-                                echo "ERROR: push rejected ($BRANCH changed since checkout?). Re-run the job."
+                            git push origin "HEAD:refs/heads/$GEN_BRANCH" || {
+                                echo "ERROR: push rejected ($GEN_BRANCH changed since checkout?). Re-run the job."
                                 exit 1
                             }
-                            git log -1 --format="Pushed %h to $BRANCH"
+                            git log -1 --format="Pushed %h to $GEN_BRANCH"
                             echo "pushed" > "${WORKSPACE}/push_result.txt"
                         '''
                     }
                 }
             }
         }
-        stage('Trigger fpl_dq_checks_remote') {
+        stage('Trigger DQ job') {
             when {
                 allOf {
                     expression { params.PUSH }
+                    expression { params.DQ_JOB?.trim() }
                     expression { fileExists('push_result.txt') && readFile('push_result.txt').trim() == 'pushed' }
                 }
             }
             steps {
-                build job: 'fpl_dq_checks_remote', wait: false, parameters: [
-                    string(name: 'BRANCH', value: params.BRANCH),
-                    string(name: 'SEASONS', value: params.SEASON),
-                    string(name: 'EXPECTED_GW', value: params.GW),
+                build job: params.DQ_JOB.trim(), wait: false, parameters: [
+                    string(name: 'BRANCH', value: env.GEN_BRANCH),
+                    string(name: 'SEASONS', value: env.GEN_SEASON),
+                    string(name: 'EXPECTED_GW', value: env.GEN_GW),
                 ]
             }
         }
@@ -184,8 +198,8 @@ pipeline {
         always {
             junit allowEmptyResults: true, testResults: "${env.RESULTS_DIR}/**/*.xml"
             archiveArtifacts allowEmptyArchive: true, artifacts: [
-                "data/${params.SEASON}/gws/gw${params.GW}.csv",
-                "data/${params.SEASON}/gws/xP${params.GW}.csv",
+                "data/${env.GEN_SEASON}/gws/gw${env.GEN_GW}.csv",
+                "data/${env.GEN_SEASON}/gws/xP${env.GEN_GW}.csv",
                 "${env.RESULTS_DIR}/**/duplicates.csv",
             ].join(', ')
             sh "rm -f ${WORKSPACE}/resolved_venv_path.txt ${WORKSPACE}/push_result.txt"

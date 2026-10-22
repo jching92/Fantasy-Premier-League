@@ -3,41 +3,48 @@
 // season(s) and fails the build if any check fails. Publishes one JUnit
 // report per season/gameweek (season<S>_gw<NN>).
 //
-// Job setup: Pipeline script from SCM -> Git -> this repo,
-//            Script Path: jenkins/fpl_dq_checks_remote.Jenkinsfile
-// Triggered downstream by fpl_gw_generator, or run manually.
+// Works as a Multibranch Pipeline (checks the branch being built, and runs
+// on every push the branch source picks up) or as a plain Pipeline job
+// (checks the BRANCH parameter). Script Path:
+// jenkins/fpl_dq_checks_remote.Jenkinsfile
 
 pipeline {
     agent any
     options {
+        // The default checkout is a full, non-sparse clone; ours is shallow + sparse
+        skipDefaultCheckout()
         timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '50'))
     }
-    // Optional: also check whenever the remote branch changes
-    // triggers { pollSCM('H/30 * * * *') }
     parameters {
         string(name: 'BRANCH', defaultValue: 'master',
-               description: 'Branch of Fantasy-Premier-League to check')
+               description: 'Branch to check (plain Pipeline jobs only; Multibranch builds use their own branch)')
         string(name: 'SEASONS', defaultValue: '2026-27',
                description: 'Season folder(s) under data/, separated by spaces or commas')
         string(name: 'EXPECTED_GW', defaultValue: '',
                description: 'Optional: latest GW that must exist (fails if missing). Blank = highest GW found')
     }
     environment {
-        // Dynamically sets path based on the user executing the Jenkins agent
-        VENV_PATH   = "/home/${env.USER}/venv/313venv"
+        // Outside the workspace so the clean checkout doesn't delete it each build
+        VENV_PATH   = "${env.HOME}/venv/313venv"
         RESULTS_DIR = 'fpl_dq_junit_results'
+        // Copied from params explicitly: on a job's first build (and the first
+        // build of each new branch) Jenkins doesn't export parameters to sh
+        // steps yet, which left $SEASONS empty and checked nothing.
+        DQ_BRANCH      = "${env.BRANCH_NAME ?: (params.BRANCH ?: 'master')}"
+        DQ_SEASONS     = "${params.SEASONS?.trim() ?: '2026-27'}"
+        DQ_EXPECTED_GW = "${params.EXPECTED_GW?.trim() ?: ''}"
     }
     stages {
         stage('Checkout Source') {
             steps {
                 script {
-                    def seasons = params.SEASONS.trim().split(/[\s,]+/) as List
-                    def sparse  = ['/*.py', '/requirements*.txt'] + seasons.collect { "/data/${it}/gws/" }
+                    def seasons = env.DQ_SEASONS.split(/[\s,]+/) as List
+                    def sparse  = ['/*.py', '/requirements.txt'] + seasons.collect { "/data/${it}/gws/" }
                     checkout([
                         $class: 'GitSCM',
-                        branches: [[name: "*/${params.BRANCH}"]],
+                        branches: [[name: "*/${env.DQ_BRANCH}"]],
                         // Same URL and credentials as selected in the job UI
                         userRemoteConfigs: scm.userRemoteConfigs,
                         extensions: [
@@ -48,7 +55,7 @@ pipeline {
                         ],
                     ])
                 }
-                sh 'git log -1 --format="Checking commit %h (%ci): %s"'
+                sh 'git log -1 --format="Checking $DQ_BRANCH at %h (%ci): %s | seasons: $DQ_SEASONS"'
             }
         }
         stage('Setup Environment') {
@@ -95,21 +102,29 @@ pipeline {
                     mkdir -p "$RESULTS_DIR"
 
                     GW_ARG=""
-                    if [ -n "$EXPECTED_GW" ]; then GW_ARG="--gw $EXPECTED_GW"; fi
+                    if [ -n "$DQ_EXPECTED_GW" ]; then GW_ARG="--gw $DQ_EXPECTED_GW"; fi
 
                     STATUS=0
-                    for SEASON in $(echo "$SEASONS" | tr ',' ' '); do
+                    CHECKED=0
+                    for SEASON in $(echo "$DQ_SEASONS" | tr ',' ' '); do
                         echo "=== dq_checks.py for $SEASON ==="
                         if [ ! -d "data/$SEASON/gws" ]; then
-                            echo "ERROR: data/$SEASON/gws not found on $BRANCH"
+                            echo "ERROR: data/$SEASON/gws not found on $DQ_BRANCH"
                             STATUS=1
                             continue
                         fi
+                        CHECKED=$((CHECKED + 1))
                         "$VENV_PATH/bin/python" dq_checks.py "data/$SEASON/gws" \
                             --season "$SEASON" $GW_ARG \
                             --junit-dir "$RESULTS_DIR/$SEASON" \
                             -o "$RESULTS_DIR/$SEASON/duplicates.csv" || STATUS=1
                     done
+
+                    # A run that checked nothing must not pass
+                    if [ "$CHECKED" -eq 0 ]; then
+                        echo "ERROR: no seasons were checked (DQ_SEASONS='$DQ_SEASONS')"
+                        exit 1
+                    fi
                     exit $STATUS
                 '''
             }

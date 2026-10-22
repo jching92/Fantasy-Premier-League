@@ -492,13 +492,22 @@ def main():
   results = run_checks(data, gws, export)
   print_results(season, results)
 
-  if export:
-    pd.concat(export, ignore_index=True).to_csv(args.output, index=False)
-    print(f"\n📁 Exported all row duplicates to: {args.output}")
-
+  # JUnit first: the reports are the main output, so nothing else may stop them.
   if args.junit_dir:
     paths = write_junit(season, results, args.junit_dir)
     print(f"\n📁 Wrote {len(paths)} JUnit XML files to {args.junit_dir}")
+
+  export_failed = False
+  if export:
+    try:
+      out_dir = os.path.dirname(args.output)
+      if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+      pd.concat(export, ignore_index=True).to_csv(args.output, index=False)
+      print(f"\n📁 Exported all row duplicates to: {args.output}")
+    except Exception as e:
+      export_failed = True
+      print(f"\n❌ Could not export duplicates to {args.output}: {e}")
 
   all_rows = [r for rows in results.values() for r in rows]
   failures = sum(r[2] == FAIL for r in all_rows)
@@ -509,7 +518,7 @@ def main():
   print("\n=======================================")
   print(f"Season {season}: {len(gws)} GWs x {len(PHASES)} checks ="
         f" {len(all_rows)} tests, {failures} failed, {skipped} skipped")
-  if failures:
+  if failures or export_failed:
     print(f"❌ Data Quality Gate FAILED. GWs with failures: {failed_gws}")
     sys.exit(1)
   print("✔ Data Quality Gate PASSED. All files clean.")
