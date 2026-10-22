@@ -1,5 +1,6 @@
 import csv
 import os
+import re
 import sys
 
 from getters import get_data, get_individual_player_data
@@ -8,28 +9,56 @@ from cleaners import id_players
 from collector import collect_gw, merge_gw
 
 
-SEASON = "2026-27"
+import argparse
+
+DEFAULT_SEASON = "2026-27"
+
+# Set from the command line in main(); defaults keep imports working.
+SEASON = DEFAULT_SEASON
 BASE_DIR = f"data/{SEASON}"
 PLAYER_DIR = f"{BASE_DIR}/players"
 GW_DIR = f"{BASE_DIR}/gws"
 
 
-def get_requested_gw():
-    if len(sys.argv) != 2:
-        print("Usage: python update_gw.py <gameweek>")
-        sys.exit(1)
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate gw{N}.csv, xP{N}.csv and update merged_gw.csv"
+    )
+    parser.add_argument("gw", type=int, help="Gameweek to generate")
+    parser.add_argument(
+        "--season",
+        default=DEFAULT_SEASON,
+        help=f"Season folder under data/ (default: {DEFAULT_SEASON}). "
+             "Must be the season the FPL API is currently serving.",
+    )
+    parser.add_argument(
+        "--require-finished",
+        action="store_true",
+        help="Exit with an error if the GW is not finished in FPL "
+             "(used by Jenkins so partial GWs are never committed)",
+    )
+    args = parser.parse_args()
 
-    try:
-        gw = int(sys.argv[1])
-    except ValueError:
-        print("Gameweek must be an integer.")
-        sys.exit(1)
+    if args.gw < 1:
+        parser.error("Gameweek must be >= 1.")
+    if not re.match(r"^\d{4}-\d{2}$", args.season):
+        parser.error("Season must look like 2026-27.")
+    return args
 
-    if gw < 1:
-        print("Gameweek must be >= 1.")
-        sys.exit(1)
 
-    return gw
+def set_season(season):
+    global SEASON, BASE_DIR, PLAYER_DIR, GW_DIR
+    SEASON = season
+    BASE_DIR = f"data/{season}"
+    PLAYER_DIR = f"{BASE_DIR}/players"
+    GW_DIR = f"{BASE_DIR}/gws"
+
+
+def api_season(data):
+    """Season the FPL API is serving, e.g. '2026-27', from GW1's deadline."""
+    first = min(data["events"], key=lambda e: e["id"])
+    year = int(first["deadline_time"][:4])
+    return f"{year}-{str(year + 1)[-2:]}"
 
 
 def generate_xp(data, gw):
@@ -163,7 +192,9 @@ def generate_gw(gw):
 
 def main():
 
-    gw = get_requested_gw()
+    args = parse_args()
+    gw = args.gw
+    set_season(args.season)
 
     print("=" * 60)
     print(
@@ -182,11 +213,28 @@ def main():
         for event in data["events"]
     }
 
+    served = api_season(data)
+    if served != SEASON:
+        print(
+            f"ERROR: FPL API is serving {served}, not {SEASON}. "
+            f"Only the current season can be generated."
+        )
+        sys.exit(1)
+
     if gw not in available_gws:
         print(
             f"WARNING: GW{gw} is not present "
             f"in bootstrap-static."
         )
+        if args.require_finished:
+            sys.exit(1)
+    else:
+        event = next(e for e in data["events"] if e["id"] == gw)
+        if not event.get("finished"):
+            print(f"WARNING: GW{gw} is not finished yet in FPL.")
+            if args.require_finished:
+                print("ERROR: --require-finished set; not generating.")
+                sys.exit(1)
 
     # 0. players_raw.csv + player_idlist.csv
     refresh_player_metadata(
