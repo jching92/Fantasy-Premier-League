@@ -1,4 +1,16 @@
 goals,shots,xG,time,position,h_team,a_team,h_goals,a_goals,date,id,season,roster_id,xA,assists,key_passes,npg,npxG,xGChain,xGBuildup
+0,0,0,90,GK,Arsenal,Wolverhampton Wanderers,2,1,2025-12-13,28928,2025,757942,0,0,0,0,0,0,0
+0,0,0,90,GK,Wolverhampton Wanderers,Manchester United,1,4,2025-12-08,28927,2025,757177,0,0,0,0,0,0,0
+0,0,0,90,GK,Wolverhampton Wanderers,Nottingham Forest,0,1,2025-12-03,28917,2025,755140,0,0,0,0,0,0,0
+0,0,0,90,GK,Aston Villa,Wolverhampton Wanderers,1,0,2025-11-30,28898,2025,754290,0,0,0,0,0,0,0
+0,0,0,90,GK,Wolverhampton Wanderers,Crystal Palace,0,2,2025-11-22,28897,2025,752050,0,0,0,0,0,0.007592028938233852,0.007592028938233852
+0,0,0,90,GK,Chelsea,Wolverhampton Wanderers,3,0,2025-11-08,28880,2025,750546,0,0,0,0,0,0,0
+0,0,0,90,GK,Fulham,Wolverhampton Wanderers,3,0,2025-11-01,28871,2025,748384,0,0,0,0,0,0,0
+0,0,0,90,GK,Wolverhampton Wanderers,Burnley,2,3,2025-10-26,28867,2025,746650,0,0,0,0,0,0,0
+0,0,0,90,GK,Sunderland,Wolverhampton Wanderers,2,0,2025-10-18,28855,2025,744265,0,0,0,0,0,0.15802925825119019,0.15802925825119019
+0,0,0,90,GK,Wolverhampton Wanderers,Brighton,1,1,2025-10-05,28847,2025,743109,0,0,0,0,0,0.073948934674263,0.073948934674263
+0,0,0,90,GK,Tottenham,Wolverhampton Wanderers,1,1,2025-09-27,28835,2025,741046,0,0,0,0,0,0.0792684480547905,0.0792684480547905
+0,0,0,90,GK,Newcastle United,Wolverhampton Wanderers,1,0,2025-09-13,28809,2025,736887,0,0,0,0,0,0,0
 0,0,0,90,GK,Wolverhampton Wanderers,Ipswich,1,2,2024-12-14,26758,2024,693600,0,0,0,0,0,0,0
 0,0,0,90,GK,West Ham,Wolverhampton Wanderers,2,1,2024-12-09,26746,2024,693278,0,0,0,0,0,0.7425240874290466,0.7425240874290466
 0,0,0,90,GK,Brentford,Wolverhampton Wanderers,5,3,2024-10-05,26667,2024,679560,0,0,0,0,0,0.07351212203502655,0.07351212203502655
