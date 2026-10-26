@@ -3,8 +3,9 @@
 // and its upstream, vaastav/Fantasy-Premier-League, for the chosen season(s).
 // Archives, per season:
 //   xg_compare_<season>_<YYYYMMDDHHMMSS SGT>.pdf        summary + one page per GW
-//   xg_compare_<season>_gwN_<ts>.pdf                    one PDF per GW
 //   xg_compare_<season>_summary_<ts>.csv, _mismatches_<ts>.csv
+// and, with PER_GW_PDFS ticked:
+//   xg_compare_<season>_<ts>.zip                        the combined PDF + one PDF per GW
 //
 // Build result:
 //   SUCCESS  every GW present in both repos matches (players, clubs, xG)
@@ -35,6 +36,8 @@ pipeline {
                description: 'Upstream repository (public, no credentials)')
         string(name: 'UPSTREAM_BRANCH', defaultValue: 'master',
                description: 'Upstream branch')
+        booleanParam(name: 'PER_GW_PDFS', defaultValue: false,
+                     description: 'Also make one PDF per GW and zip them with the combined PDF (default: the combined PDF only)')
         booleanParam(name: 'FAIL_ON_DIFF', defaultValue: false,
                      description: 'Fail the build (instead of UNSTABLE) when players, clubs or xG differ')
     }
@@ -49,6 +52,7 @@ pipeline {
         XC_UPSTREAM_REPO   = "${params.UPSTREAM_REPO?.trim() ?: 'https://github.com/vaastav/Fantasy-Premier-League.git'}"
         XC_UPSTREAM_BRANCH = "${params.UPSTREAM_BRANCH?.trim() ?: 'master'}"
         XC_FAIL_ON_DIFF    = "${params.FAIL_ON_DIFF == null ? false : params.FAIL_ON_DIFF}"
+        XC_PER_GW_PDFS     = "${params.PER_GW_PDFS == null ? false : params.PER_GW_PDFS}"
     }
     stages {
         stage('Validate Parameters') {
@@ -136,10 +140,23 @@ pipeline {
                         STATUS=0      # 0 = all match, 2 = differences, 1 = error
                         for SEASON in $(echo "$XC_SEASONS" | tr ',' ' '); do
                             echo "=== xg_compare.py for $SEASON ==="
+                            SEASON_OUT="$OUT_DIR/$SEASON"
+                            PER_GW_ARG=""
+                            if [ "$XC_PER_GW_PDFS" = "true" ]; then PER_GW_ARG="--per-gw-dir $SEASON_OUT/per_gw"; fi
                             "$VENV_PATH/bin/python" xg_compare.py \
                                 --season "$SEASON" --fork-dir . --upstream-dir "$UPSTREAM_DIR" \
-                                --out "$OUT_DIR/$SEASON" --tag "_$RUN_TS" --note "$NOTE"
+                                --out "$SEASON_OUT" --tag "_$RUN_TS" --note "$NOTE" $PER_GW_ARG
                             RC=$?
+                            # PER_GW_PDFS: zip the combined PDF + per-GW PDFs (python's
+                            # zipfile, so the agent needs no zip package), then drop the
+                            # loose per-GW files so only the .zip is archived
+                            if [ -n "$PER_GW_ARG" ] && [ -d "$SEASON_OUT/per_gw" ]; then
+                                ( cd "$SEASON_OUT" && "$VENV_PATH/bin/python" -m zipfile -c \
+                                    "xg_compare_${SEASON}_${RUN_TS}.zip" \
+                                    "xg_compare_${SEASON}_${RUN_TS}.pdf" per_gw ) || RC=1
+                                rm -rf "$SEASON_OUT/per_gw"
+                                echo "Zipped: $SEASON_OUT/xg_compare_${SEASON}_${RUN_TS}.zip"
+                            fi
                             if [ $RC -eq 1 ]; then STATUS=1
                             elif [ $RC -eq 2 ] && [ $STATUS -eq 0 ]; then STATUS=2
                             elif [ $RC -ne 0 ] && [ $RC -ne 2 ]; then STATUS=1
@@ -162,7 +179,7 @@ pipeline {
     post {
         always {
             archiveArtifacts allowEmptyArchive: true,
-                             artifacts: "${env.OUT_DIR}/**/*.pdf, ${env.OUT_DIR}/**/*.csv"
+                             artifacts: "${env.OUT_DIR}/**/*.pdf, ${env.OUT_DIR}/**/*.csv, ${env.OUT_DIR}/**/*.zip"
             // Single quotes + "$WORKSPACE": the shell expands it, quoted, so a job
             // name with spaces or brackets (e.g. "FPL calibration checks (remote)") works
             sh 'rm -f "$WORKSPACE/resolved_venv_path.txt" "$WORKSPACE/fork_ref.txt" "$WORKSPACE/upstream_ref.txt"'

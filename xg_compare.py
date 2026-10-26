@@ -17,7 +17,7 @@ own players_raw.csv (id -> code), so differing FPL ids don't matter.
 
 Output (in --out):
   xg_compare_<season><tag>.pdf          summary page + one page per GW
-  xg_compare_<season>_gwN<tag>.pdf       one PDF per GW
+  <per-gw-dir>/xg_compare_<season>_gwN<tag>.pdf  one PDF per GW, only with --per-gw-dir
   xg_compare_<season>_summary<tag>.csv   the summary table
   xg_compare_<season>_mismatches<tag>.csv  players missing from one side or
                                          with xG off y = x (GWs in both)
@@ -46,7 +46,9 @@ TOL = 1e-6          # |xG fork - xG upstream| above this counts as off y = x
 A4_LANDSCAPE = (11.69, 8.27)
 
 
-def load(root: str, season: str) -> pd.DataFrame:
+def load(root: str, season: str):
+    """merged_gw rows with `code` added, exact duplicate rows removed.
+    Returns (rows, duplicate rows removed per GW)."""
     gw_path  = os.path.join(root, "data", season, "gws", "merged_gw.csv")
     raw_path = os.path.join(root, "data", season, "players_raw.csv")
     m   = pd.read_csv(gw_path, low_memory=False)
@@ -57,7 +59,16 @@ def load(root: str, season: str) -> pd.DataFrame:
         print(f"WARNING: {root}: {unmapped} merged_gw rows have an element not in players_raw.csv")
     if "position" in m:
         m = m[m["position"] != "AM"]     # assistant-manager rows, if any
-    return m[["code", "name", "team", "GW", "fixture", "minutes", "expected_goals"]]
+    # The same player (same element id) listed twice for one fixture, e.g.
+    # Kroupi.Jr in 2025-26 GW1-9. Joining on (code, GW, fixture) would pair
+    # every copy with every copy, so keep one and report how many were removed.
+    dup = m.duplicated(["element", "GW", "fixture"])
+    dups = m[dup].groupby("GW").size()
+    if dup.any():
+        print(f"NOTE: {root}: removed {int(dup.sum())} duplicate player rows "
+              f"(same element, GW, fixture) in GW {sorted(dups.index.tolist())}")
+    m = m[~dup]
+    return m[["code", "name", "team", "GW", "fixture", "minutes", "expected_goals"]], dups
 
 
 def sha1(path: str) -> str:
@@ -68,7 +79,8 @@ def sha1(path: str) -> str:
         return "missing"
 
 
-def gw_page(season, g, up, fk, labels):
+def gw_page(season, g, up, fk, labels, dups=(None, None), draw=True):
+    """Stats (and, if draw, the PDF page) for gameweek g."""
     a, b = up[up.GW == g], fk[fk.GW == g]
     j = a.merge(b, on=["code", "GW", "fixture"], how="outer",
                 suffixes=("_u", "_f"), indicator=True)
@@ -92,6 +104,8 @@ def gw_page(season, g, up, fk, labels):
              matched=len(both),
              off_diag=len(off) if in_both_sources else 0,
              max_abs=float(j.dxg.max()) if in_both_sources and len(j) else np.nan,
+             dup_u=int(dups[0].get(g, 0)) if dups[0] is not None else 0,
+             dup_f=int(dups[1].get(g, 0)) if dups[1] is not None else 0,
              in_both=in_both_sources)
 
     # Rows for the mismatch CSV (only where both sources have this GW)
@@ -110,6 +124,8 @@ def gw_page(season, g, up, fk, labels):
                                 f"NULL xG in {labels[1]} (taken as 0)",
                                 f"NULL xG in {labels[0]} (taken as 0)"], "xG off y=x")})
 
+    if not draw:
+        return None, r, mism
     fig = plt.figure(figsize=A4_LANDSCAPE)
     fig.suptitle(f"{season}  GW{g}  —  player xG per fixture: {labels[0]} (x) vs {labels[1]} (y)",
                  fontsize=12, fontweight="bold")
@@ -144,6 +160,7 @@ def gw_page(season, g, up, fk, labels):
     w = max(len(labels[0]), len(labels[1]))
     lines = [
         f"Rows (player-fixtures):  {labels[0]:<{w}} {r['rows_u']:>4}   {labels[1]:<{w}} {r['rows_f']:>4}",
+        f"Duplicate rows removed:  {labels[0]:<{w}} {r['dup_u']:>4}   {labels[1]:<{w}} {r['dup_f']:>4}",
         f"Players (by code):       {labels[0]:<{w}} {r['players_u']:>4}   {labels[1]:<{w}} {r['players_f']:>4}",
         f"Clubs:                   {labels[0]:<{w}} {r['clubs_u']:>4}   {labels[1]:<{w}} {r['clubs_f']:>4}",
         f"Only in {labels[0]}: {r['only_u']}   Only in {labels[1]}: {r['only_f']}",
@@ -180,16 +197,21 @@ def summary_page(season, rows, labels, note):
     fig.suptitle(f"{season}  —  xG data comparison summary: {labels[0]} vs {labels[1]}",
                  fontsize=13, fontweight="bold")
     cols = ["GW", "rows_u", "rows_f", "players_u", "players_f", "clubs_u", "clubs_f",
-            "only_u", "only_f", "matched", "off_diag", "max_abs"]
+            "only_u", "only_f", "dups", "matched", "off_diag", "max_abs"]
     hdr  = ["GW", f"Rows\n{labels[0]}", f"Rows\n{labels[1]}", f"Players\n{labels[0]}",
             f"Players\n{labels[1]}", f"Clubs\n{labels[0]}", f"Clubs\n{labels[1]}",
-            f"Only in\n{labels[0]}", f"Only in\n{labels[1]}", "Matched", "xG off\ny=x", "max\n|Δ xG|"]
+            f"Only in\n{labels[0]}", f"Only in\n{labels[1]}", "Dup rows\nremoved", "Matched", "xG off\ny=x", "max\n|Δ xG|"]
     n = len(rows)
     # Row height shrinks so up to 38 GWs (+ a note) fit on one page
     table_h = min(0.72, 0.06 * (n + 1))
     ax = fig.add_axes([0.04, 0.88 - table_h, 0.92, table_h]); ax.axis("off")
-    cell = [[("—" if pd.isna(r[c]) else f"{r[c]:.3f}") if c == "max_abs" else str(int(r[c]))
-             for c in cols] for r in rows]
+    def fmt(r, c):
+        if c == "max_abs":
+            return "—" if pd.isna(r[c]) else f"{r[c]:.3f}"
+        if c == "dups":                       # upstream / fork
+            return f"{r['dup_u']} / {r['dup_f']}"
+        return str(int(r[c]))
+    cell = [[fmt(r, c) for c in cols] for r in rows]
     t = ax.table(cellText=cell, colLabels=hdr, loc="upper center", cellLoc="center",
                  bbox=[0, 0, 1, 1])
     t.auto_set_font_size(False); t.set_fontsize(7 if n > 20 else 8)
@@ -212,6 +234,8 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default="xg_compare_output")
     ap.add_argument("--fork-label", default="jching92")
     ap.add_argument("--upstream-label", default="vaastav")
+    ap.add_argument("--per-gw-dir", default="",
+                    help="also write one PDF per GW into this folder (default: only the combined PDF)")
     ap.add_argument("--tag", default="", help="suffix added to every file name, e.g. _20261026152500")
     ap.add_argument("--note", default="", help="extra text for the summary page (e.g. commit ids)")
     args = ap.parse_args(argv)
@@ -221,16 +245,17 @@ def main(argv=None) -> int:
         if not os.path.isfile(os.path.join(root, "data", S, "gws", "merged_gw.csv")):
             print(f"ERROR: {root}/data/{S}/gws/merged_gw.csv not found")
             return 1
-    up, fk = load(args.upstream_dir, S), load(args.fork_dir, S)
+    (up, dup_u), (fk, dup_f) = load(args.upstream_dir, S), load(args.fork_dir, S)
     os.makedirs(args.out, exist_ok=True)
 
     same = {f: sha1(os.path.join(args.upstream_dir, "data", S, f)) == sha1(os.path.join(args.fork_dir, "data", S, f))
             for f in ("gws/merged_gw.csv", "players_raw.csv")}
-    rows, mism, figs = [], [], []
-    for g in sorted(set(up.GW) | set(fk.GW)):
-        fig, r, mm = gw_page(S, g, up, fk, labels)
-        rows.append(r); mism.append(mm); figs.append(fig)
-        fig.savefig(os.path.join(args.out, f"xg_compare_{S}_gw{g}{args.tag}.pdf"))
+    gws = sorted(set(up.GW) | set(fk.GW))
+    # Pass 1: numbers only (fast), so the summary page can go first in the PDF
+    rows, mism = [], []
+    for g in gws:
+        _, r, mm = gw_page(S, g, up, fk, labels, (dup_u, dup_f), draw=False)
+        rows.append(r); mism.append(mm)
 
     ahead_f = [r["GW"] for r in rows if not r["in_both"] and r["rows_f"]]
     ahead_u = [r["GW"] for r in rows if not r["in_both"] and r["rows_u"]]
@@ -240,16 +265,26 @@ def main(argv=None) -> int:
         f"Players keyed by FPL 'code' (players_raw id -> code), matched on (code, GW, fixture). "
         f"NULL xG (a blank cell, or a player missing from one source) is taken as 0, so every player in either "
         f"source is compared. 'Off y=x' = |xG {labels[1]} - xG {labels[0]}| > {TOL:g} after that.",
+        (f"Duplicate player rows removed before comparing (same element, GW, fixture): "
+         f"{labels[0]} {int(dup_u.sum())}, {labels[1]} {int(dup_f.sum())}." if len(dup_u) or len(dup_f) else ""),
         "File identity: " + ", ".join(f"{f} {'identical' if s else 'different'}" for f, s in same.items()) + ".",
         f"GWs only in {labels[1]}: {ahead_f}" if ahead_f else "",
         f"GWs only in {labels[0]}: {ahead_u}" if ahead_u else "",
         (f"RESULT: differences in GW {diff_gws} (bold rows)." if diff_gws
          else "RESULT: every GW present in both sources matches (players, clubs and xG)."),
     ]))
+    # Pass 2: one page at a time, written to the season PDF (and its own PDF),
+    # then closed, so memory stays flat however many GWs there are
     with PdfPages(os.path.join(args.out, f"xg_compare_{S}{args.tag}.pdf")) as pdf:
-        pdf.savefig(summary_page(S, rows, labels, note))
-        for fg in figs:
-            pdf.savefig(fg); plt.close(fg)
+        fig = summary_page(S, rows, labels, note)
+        pdf.savefig(fig); plt.close(fig)
+        for g in gws:
+            fig, _, _ = gw_page(S, g, up, fk, labels, (dup_u, dup_f), draw=True)
+            pdf.savefig(fig)
+            if args.per_gw_dir:
+                os.makedirs(args.per_gw_dir, exist_ok=True)
+                fig.savefig(os.path.join(args.per_gw_dir, f"xg_compare_{S}_gw{g}{args.tag}.pdf"))
+            plt.close(fig)
 
     summ = pd.DataFrame(rows).rename(columns=lambda c: c.replace("_u", f"_{labels[0]}").replace("_f", f"_{labels[1]}")
                                      if c != "off_diag" else c)
