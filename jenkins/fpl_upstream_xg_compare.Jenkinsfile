@@ -163,7 +163,9 @@ pipeline {
         always {
             archiveArtifacts allowEmptyArchive: true,
                              artifacts: "${env.OUT_DIR}/**/*.pdf, ${env.OUT_DIR}/**/*.csv"
-            sh "rm -f ${WORKSPACE}/resolved_venv_path.txt ${WORKSPACE}/fork_ref.txt ${WORKSPACE}/upstream_ref.txt"
+            // Single quotes + "$WORKSPACE": the shell expands it, quoted, so a job
+            // name with spaces or brackets (e.g. "FPL calibration checks (remote)") works
+            sh 'rm -f "$WORKSPACE/resolved_venv_path.txt" "$WORKSPACE/fork_ref.txt" "$WORKSPACE/upstream_ref.txt"'
         }
     }
 }
