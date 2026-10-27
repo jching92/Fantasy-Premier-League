@@ -134,7 +134,8 @@ pipeline {
         always {
             junit allowEmptyResults: true, testResults: "${env.RESULTS_DIR}/**/*.xml"
             archiveArtifacts allowEmptyArchive: true, artifacts: "${env.RESULTS_DIR}/**/duplicates.csv"
-            sh "rm -f ${WORKSPACE}/resolved_venv_path.txt"
+            // Quoted: works whatever the job (and so the workspace folder) is named
+            sh 'rm -f "$WORKSPACE/resolved_venv_path.txt"'
         }
     }
 }

@@ -202,7 +202,9 @@ pipeline {
                 "data/${env.GEN_SEASON}/gws/xP${env.GEN_GW}.csv",
                 "${env.RESULTS_DIR}/**/duplicates.csv",
             ].join(', ')
-            sh "rm -f ${WORKSPACE}/resolved_venv_path.txt ${WORKSPACE}/push_result.txt"
+            // Single quotes + "$WORKSPACE": the shell expands it, quoted, so a job
+            // name with spaces or brackets (e.g. "FPL gw Generator (remote)") works
+            sh 'rm -f "$WORKSPACE/resolved_venv_path.txt" "$WORKSPACE/push_result.txt"'
         }
     }
 }
