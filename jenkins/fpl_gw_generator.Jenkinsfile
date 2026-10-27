@@ -164,7 +164,7 @@ pipeline {
                             git diff --cached --stat | tail -5
                             git -c user.name="Jenkins (fpl_gw_generator)" \
                                 -c user.email="jenkins@jching-rpi4" \
-                                commit -q -m "GW$GEN_GW $GEN_SEASON (fpl_gw_generator #$BUILD_NUMBER)"
+                                commit -q -m "GW$GEN_GW $GEN_SEASON (fpl_gw_generator build $BUILD_NUMBER)"
                             # Rejected if the branch moved since checkout; re-run the job in that case
                             git push origin "HEAD:refs/heads/$GEN_BRANCH" || {
                                 echo "ERROR: push rejected ($GEN_BRANCH changed since checkout?). Re-run the job."
